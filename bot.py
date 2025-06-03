@@ -1,3 +1,4 @@
+# Trigger redeploy on Railway
 import discord
 from discord.ext import commands
 import matplotlib.pyplot as plt
