@@ -1,104 +1,167 @@
-import pandas as pd
-from bs4 import BeautifulSoup
+import csv
 import json
-from io import StringIO
+from collections import defaultdict
 
-def parse_grades_html():
-    # Read the HTML file
-    with open('raw_data2022.html .html', 'r', encoding='utf-8') as file:
-        html_content = file.read()
+def normalize_term(term):
+    """Normalize term format to FA/SP + YY format"""
+    term = term.strip().upper()
+    if 'FALL' in term or term.startswith('F'):
+        # Extract year, handle both YYYY and YY
+        year_part = ''.join(filter(str.isdigit, term))
+        if len(year_part) >= 2:
+             return f"FA{year_part[-2:]}"
+        
+    elif 'SPRING' in term or term.startswith('S'):
+         # Extract year, handle both YYYY and YY
+        year_part = ''.join(filter(str.isdigit, term))
+        if len(year_part) >= 2:
+             return f"SP{year_part[-2:]}"
 
-    # Parse HTML
-    soup = BeautifulSoup(html_content, 'html.parser')
+    return term
+
+def normalize_column_headers(headers):
+    """Normalize column headers to a standard format"""
+    header_map = {
+        'TERM': 'term',
+        'Term': 'term',
+        'SUBJECT': 'subject',
+        'NBR': 'course_number',
+        'Course Number': 'course_number',
+        'PROF': 'professor',
+        'Instructor': 'instructor', # Keep instructor as is for now, prof will be used for key
+        'AVG GPA': 'avg_gpa',
+        'Average GPA': 'avg_gpa',
+        'INC/NA': 'inc_na',
+        'Inc/No Grade': 'inc_na',
+        'W': 'W',
+        'Withdrawal': 'W'
+    }
+    # Process headers: remove newlines, strip whitespace, then map and lowercase (except for grades)
+    cleaned_headers = [h.replace('\n', '').strip() for h in headers]
     
-    # Find all tables
-    tables = soup.find_all('table')
-    print(f"Found {len(tables)} tables in the HTML file")
+    grades_to_preserve_case = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'F', 'W', 'P', 'INC/NA', 'inc_na']
     
-    # Convert tables to pandas DataFrames
-    dfs = []
-    for table in tables:
-        try:
-            df = pd.read_html(StringIO(str(table)))[0]
-            dfs.append(df)
-        except Exception as e:
-            continue
+    return [header_map.get(h, h if h in grades_to_preserve_case else h.lower()) for h in cleaned_headers]
+
+def parse_grades(csv_file):
+    """Parse the CSV file and return normalized grade data"""
+    current_block_rows = []
+    all_data_blocks = []
+    current_headers = None
+
+    with open(csv_file, 'r') as f:
+        reader = csv.reader(f)
+        
+        for row in reader:
+            if not any(row):  # Empty row indicates block separator
+                if current_block_rows:
+                    if current_headers:
+                         all_data_blocks.append((current_headers, current_block_rows))
+                    current_block_rows = []
+                    current_headers = None # Reset headers for the next block
+            elif any(cell.strip() for cell in row):
+                 # Check if this row is a header row
+                 if any(cell.strip().upper().replace('\n', '') in ('TERM', 'Term') for cell in row):
+                     if current_block_rows and current_headers:
+                          all_data_blocks.append((current_headers, current_block_rows))
+
+                     current_headers = normalize_column_headers(row)
+                     current_block_rows = [] # Start a new block of rows under this header
+                 elif current_headers:
+                      # Only add row if we have headers for the current block
+                     current_block_rows.append(row)
+
+        # Add the last block if it exists
+        if current_block_rows and current_headers:
+            all_data_blocks.append((current_headers, current_block_rows))
+
+    # Process all blocks and create normalized data
+    result = {}
     
-    # Find all tables with a 'PROF' column and grade columns
-    grade_columns = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "F", "W"]
-    all_prof_rows = []
-    for df in dfs:
-        cols = [str(col).strip() for col in df.columns]
-        if 'PROF' in cols and any(g in cols for g in grade_columns):
-            df = df.rename(columns=lambda x: str(x).strip())
-            all_prof_rows.append(df)
-    
-    if not all_prof_rows:
-        raise ValueError("Could not find any tables with professor and grade breakdown")
-    
-    # Concatenate all relevant tables
-    all_data = pd.concat(all_prof_rows, ignore_index=True)
-    
-    # Filter for Computer Science (CSCI) only
-    if 'SUBJECT' in all_data.columns:
-        all_data = all_data[all_data['SUBJECT'] == 'CSCI']
-    
-    # Aggregate by professor and course
-    grades_dict = {}
-    for (prof, course_nbr), group in all_data.groupby(['PROF', 'NBR']):
-        prof_key = prof.lower()
-        course_key = str(course_nbr)
-        course_name = group['COURSE NAME'].iloc[0] if 'COURSE NAME' in group.columns else ''
-        grades = {}
-        total_students = 0
-        weighted_gpa_sum = 0
-        gpa_col = None
-        # Find GPA column
-        for col in group.columns:
-            if "GPA" in col and "AVG" in col.upper():
-                gpa_col = col
-                break
-        # Sum grades
-        for grade in grade_columns:
-            if grade in group.columns:
-                grades[grade] = int(group[grade].fillna(0).sum())
-            else:
-                grades[grade] = 0
-        # Weighted average GPA
-        if gpa_col and 'TOTAL' in group.columns:
-            for _, row in group.iterrows():
+    for headers, rows in all_data_blocks:
+        # Dynamically detect which grade columns are present in this block
+        possible_grades = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'F', 'W', 'P', 'INC/NA', 'inc_na']
+        # Ensure grade columns from headers match the desired output keys (preserve case for grades)
+        grade_columns = [h for h in headers if h in possible_grades]
+
+        for i, row in enumerate(rows):
+            # Ensure row has enough columns to match headers
+            if len(row) < len(headers):
+                continue
+                
+            data = dict(zip(headers, row))
+            
+            # Skip non-CSCI courses
+            if data.get('subject', '').upper() != 'CSCI':
+                continue
+                
+            # Create key for the result dictionary
+            term = normalize_term(data.get('term', ''))
+            # Use either 'professor' or 'instructor' for the professor name, preferring 'professor' if both exist
+            prof = data.get('professor', data.get('instructor','')).strip()
+            course = data.get('course_number', '').strip()
+            
+            if not all([term, prof, course]):
+                continue
+                
+            key = f"{prof}, {course}, {term}"
+            
+            # Extract grade data only for columns present in this block
+            grades = {}
+            for grade in grade_columns:
+                value = data.get(grade, '0')
                 try:
-                    gpa = float(row[gpa_col]) if pd.notnull(row[gpa_col]) else 0
-                    count = int(row['TOTAL']) if pd.notnull(row['TOTAL']) else 0
-                    weighted_gpa_sum += gpa * count
-                    total_students += count
-                except:
-                    continue
-            avg_gpa = round(weighted_gpa_sum / total_students, 3) if total_students > 0 else None
-        else:
-            avg_gpa = None
-        # Add to professor's courses
-        if prof_key not in grades_dict:
-            grades_dict[prof_key] = {
-                'name': prof,
-                'courses': {}
-            }
-        grades_dict[prof_key]['courses'][course_key] = {
-            'course_name': course_name,
-            'avg_gpa': avg_gpa,
-            'grades': grades
-        }
+                    grades[grade] = int(value)
+                except (ValueError, TypeError):
+                    grades[grade] = 0
+
+            # For output, ensure all standard grades are present (fill missing with 0)
+            standard_grades = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'F', 'W', 'P', 'INC/NA']
+            final_grades = {}
+            for g in standard_grades:
+                 final_grades[g] = grades.get(g, 0)
+
+            # Handle 'inc_na' specifically if present in grades (could be from either 'INC/NA' or 'inc_na' in headers)
+            if 'inc_na' in grades:
+                 final_grades['INC/NA'] = grades['inc_na']
+            elif 'INC/NA' not in final_grades:
+                 final_grades['INC/NA'] = 0
+
+
+            # Get average GPA
+            try:
+                avg_gpa = float(data.get('avg_gpa', '0'))
+            except (ValueError, TypeError):
+                avg_gpa = 0.0
+
+            # Only add if the key doesn't exist (to avoid potential duplicates or summary rows)
+            if key not in result:
+                 result[key] = {
+                    "name": prof,
+                    "term": term,
+                    "course": course,
+                    "grades": final_grades,
+                    "avg_gpa": avg_gpa
+                }
+
     
-    # Save to JSON file
-    with open('grade_data.json', 'w') as f:
-        json.dump(grades_dict, f, indent=2)
+    return result
+
+def main():
+    input_file = "CSCI_ALL - Sheet1.csv"
+    output_file = "grades.json"
     
-    return grades_dict
+    try:
+        data = parse_grades(input_file)
+        
+        with open(output_file, 'w') as f:
+            json.dump(data, f, indent=2)
+            
+        print(f"Successfully processed {len(data)} course sections")
+        print(f"Data written to {output_file}")
+        
+    except Exception as e:
+        print(f"Error processing file: {str(e)}")
 
 if __name__ == "__main__":
-    try:
-        grades_dict = parse_grades_html()
-        print("Successfully parsed grades data!")
-        print(f"Found data for {len(grades_dict)} professors")
-    except Exception as e:
-        print(f"Error: {str(e)}") 
+    main() 
