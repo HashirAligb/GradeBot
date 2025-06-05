@@ -107,7 +107,7 @@ async def grades(ctx, *, args: str):
         response = (
             f"**Professor {course_data['name']} - CSCI {course_data['course']} ({course_data['term']})**\n"
             f"Average GPA: {course_data['avg_gpa']:.2f}\n\n"
-            f"Grade Breakdown:\\n{grade_text}"
+            f"Grade Breakdown:\n{grade_text}"
         )
         await ctx.send(response, file=file)
         return
@@ -125,9 +125,9 @@ async def grades(ctx, *, args: str):
     if not matching_entry:
         available_terms = sorted(list(set([entry['term'] for entry in matching_entries])))
         terms_list = ", ".join(available_terms)
-        response = f"Professor {prof_last_name_input} did not teach CSCI {course_nbr_input} in {term_input_raw} (looked for {term_lookup_key})."
+        response = f"No data found for CSCI {course_nbr_input} with Professor {prof_last_name_input} for term {term_input_raw}."
         if available_terms:
-             response += f" Data is available for the following terms: {terms_list}"
+             response += f" Data is available for: {terms_list}"
         await ctx.send(response)
         return
 
@@ -143,7 +143,7 @@ async def grades(ctx, *, args: str):
     response = (
         f"**Professor {course_data['name']} - CSCI {course_data['course']} ({course_data['term']})**\n"
         f"Average GPA: {course_data['avg_gpa']:.2f}\n\n"
-        f"Grade Breakdown:\\n{grade_text}"
+        f"Grade Breakdown:\n{grade_text}"
     )
     await ctx.send(response, file=file)
 
